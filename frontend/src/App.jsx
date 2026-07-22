@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
 import { API_URL } from './config.js';
 import './App.css';
 
@@ -12,6 +13,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -74,6 +77,36 @@ export default function App() {
     setSidebarOpen(false);
   };
 
+  const startRename = (e, c) => {
+    e.stopPropagation();
+    setRenamingId(c.id);
+    setRenameValue(c.title || '');
+  };
+
+  const commitRename = (id) => {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title) return;
+    axios
+      .patch(`${API_URL}/conversations/${id}`, { title })
+      .then(() => loadConversationList())
+      .catch(() => setError('Could not rename that conversation.'));
+  };
+
+  const deleteConversation = (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
+    axios
+      .delete(`${API_URL}/conversations/${id}`)
+      .then(() => {
+        loadConversationList();
+        if (id === conversationId) {
+          createNewConversation();
+        }
+      })
+      .catch(() => setError('Could not delete that conversation.'));
+  };
+
   const send = async () => {
     if (!input.trim() || !conversationId || loading) return;
     const userMsg = { role: 'user', content: input };
@@ -122,7 +155,40 @@ export default function App() {
               className={`conversation-item ${c.id === conversationId ? 'active' : ''}`}
               onClick={() => switchConversation(c.id)}
             >
-              {c.title || 'New chat'}
+              {renamingId === c.id ? (
+                <input
+                  autoFocus
+                  className="rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(c.id);
+                    if (e.key === 'Escape') setRenamingId(null);
+                  }}
+                  onBlur={() => commitRename(c.id)}
+                />
+              ) : (
+                <>
+                  <span className="conversation-title">{c.title || 'New chat'}</span>
+                  <span className="conversation-actions">
+                    <button
+                      className="icon-btn small"
+                      title="Rename"
+                      onClick={(e) => startRename(e, c)}
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      className="icon-btn small"
+                      title="Delete"
+                      onClick={(e) => deleteConversation(e, c.id)}
+                    >
+                      🗑️
+                    </button>
+                  </span>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -148,13 +214,20 @@ export default function App() {
         <div className="chat-window">
           {messages.length === 0 && !loading && (
             <div className="empty-state">
-              Ask about hydrogen economics, IPO strategy, electrolyzer tech, project
-              structuring — or anything else, general questions welcome too.
+              Ask me anything — everyday questions, business strategy for any
+              industry, planning, writing, or general knowledge. Nothing here is
+              limited to one topic.
             </div>
           )}
           {messages.map((m, i) => (
             <div key={i} className={`bubble-row ${m.role}`}>
-              <div className={`bubble ${m.role}`}>{m.content}</div>
+              <div className={`bubble ${m.role}`}>
+                {m.role === 'assistant' ? (
+                  <ReactMarkdown>{m.content}</ReactMarkdown>
+                ) : (
+                  m.content
+                )}
+              </div>
             </div>
           ))}
           {loading && (
