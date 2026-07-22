@@ -5,6 +5,7 @@ All are wrapped in try/except so one failing API never crashes the chat.
 """
 
 import os
+from datetime import datetime, timezone, timedelta
 import requests
 
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
@@ -12,7 +13,18 @@ NEWSDATA_KEY = os.environ.get("NEWSDATA_KEY", "")
 SERPER_KEY = os.environ.get("SERPER_KEY", "")  # optional, better web search
 
 
-def get_weather(location: str) -> str:
+def get_current_datetime() -> str:
+    """Get today's date and current time. Use this for 'what is today', 'what's the date',
+    'what time is it' with no specific city mentioned. Defaults to India (IST)."""
+    try:
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist)
+        return f"Current date and time (IST, India): {now.strftime('%A, %d %B %Y, %I:%M %p')}"
+    except Exception as e:
+        return f"Date/time lookup failed: {str(e)}"
+
+
+def get_weather(location: str = "Delhi") -> str:
     """Get current weather for a location name (e.g. 'Delhi', 'New York')."""
     try:
         # Step 1: geocode the location name to lat/lon (free, no key)
@@ -47,7 +59,7 @@ def get_weather(location: str) -> str:
         return f"Weather lookup failed: {str(e)}"
 
 
-def get_time(location: str) -> str:
+def get_time(location: str = "Asia/Kolkata") -> str:
     """Get current local time for a city/timezone (e.g. 'Asia/Kolkata', 'Tokyo')."""
     try:
         # Try treating input as a direct IANA timezone first
@@ -55,7 +67,7 @@ def get_time(location: str) -> str:
         if not tz:
             # crude city -> common timezone fallback list
             common = {
-                "delhi": "Asia/Kolkata", "mumbai": "Asia/Kolkata",
+                "delhi": "Asia/Kolkata", "mumbai": "Asia/Kolkata", "india": "Asia/Kolkata",
                 "new york": "America/New_York", "london": "Europe/London",
                 "tokyo": "Asia/Tokyo", "dubai": "Asia/Dubai",
                 "singapore": "Asia/Singapore", "sydney": "Australia/Sydney",
@@ -63,9 +75,13 @@ def get_time(location: str) -> str:
             tz = common.get(location.lower(), "Asia/Kolkata")
 
         r = requests.get(f"https://worldtimeapi.org/api/timezone/{tz}", timeout=10).json()
+        if "datetime" not in r:
+            # Fallback if WorldTimeAPI is down — at least give IST
+            return get_current_datetime()
         return f"Current time in {tz}: {r.get('datetime', 'unavailable')}"
-    except Exception as e:
-        return f"Time lookup failed: {str(e)}"
+    except Exception:
+        # Never fail outright — fall back to a safe default
+        return get_current_datetime()
 
 
 def get_stock_price(symbol: str) -> str:
@@ -197,6 +213,14 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_current_datetime",
+            "description": "Get today's date and current time in India (IST). Use this whenever the user asks 'what is today', 'what's the date', 'what time is it' without naming a specific city.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_weather",
             "description": "Get current weather for a location.",
             "parameters": {
@@ -290,13 +314,14 @@ TOOL_DEFINITIONS = [
 ]
 
 TOOL_FUNCTIONS = {
-    "get_weather": lambda args: get_weather(args["location"]),
-    "get_time": lambda args: get_time(args["location"]),
-    "get_stock_price": lambda args: get_stock_price(args["symbol"]),
+    "get_current_datetime": lambda args: get_current_datetime(),
+    "get_weather": lambda args: get_weather(args.get("location", "Delhi")),
+    "get_time": lambda args: get_time(args.get("location", "Asia/Kolkata")),
+    "get_stock_price": lambda args: get_stock_price(args.get("symbol", "")),
     "get_currency_conversion": lambda args: get_currency_conversion(
-        args["amount"], args["from_currency"], args["to_currency"]
+        args.get("amount", 1), args.get("from_currency", "USD"), args.get("to_currency", "INR")
     ),
     "get_news": lambda args: get_news(args.get("query", ""), args.get("energy_only", False)),
     "get_earthquake_alerts": lambda args: get_earthquake_alerts(args.get("min_magnitude", 4.5)),
-    "web_search": lambda args: web_search(args["query"]),
+    "web_search": lambda args: web_search(args.get("query", "")),
 }
