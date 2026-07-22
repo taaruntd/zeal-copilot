@@ -45,6 +45,10 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class RenameRequest(BaseModel):
+    title: str
+
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Zeal Co-Pilot backend is running"}
@@ -66,6 +70,23 @@ def list_conversations():
 def new_conversation():
     result = sb.table("conversations").insert({}).execute()
     return {"conversation_id": result.data[0]["id"]}
+
+
+@app.patch("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: str, req: RenameRequest):
+    title = req.title.strip()[:60]
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    sb.table("conversations").update({"title": title}).eq("id", conversation_id).execute()
+    return {"id": conversation_id, "title": title}
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    # messages table has ON DELETE CASCADE on conversation_id, so this
+    # removes the conversation's messages automatically too.
+    sb.table("conversations").delete().eq("id", conversation_id).execute()
+    return {"deleted": True, "id": conversation_id}
 
 
 @app.get("/conversations/{conversation_id}/messages")
@@ -164,7 +185,8 @@ def chat(req: ChatRequest):
 
     # If this is the first message in the conversation, use it as the sidebar title
     if is_first_message:
-        title = req.message.strip()[:60]
+        clean = " ".join(req.message.strip().split())  # collapse newlines/extra spaces
+        title = clean[:57] + "..." if len(clean) > 57 else clean
         sb.table("conversations").update({"title": title}).eq("id", req.conversation_id).execute()
 
     # 3. Build the message list for the model
