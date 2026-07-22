@@ -36,6 +36,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL_NAME = "llama-3.3-70b-versatile"
+FALLBACK_MODEL_NAME = "llama-3.1-8b-instant"  # lighter/faster free model, used if primary fails
 HISTORY_LIMIT = 20  # how many past messages to feed back as context
 
 
@@ -47,6 +48,18 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Zeal Co-Pilot backend is running"}
+
+
+@app.get("/conversations")
+def list_conversations():
+    result = (
+        sb.table("conversations")
+        .select("id,title,created_at")
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return {"conversations": result.data}
 
 
 @app.post("/conversations")
@@ -67,6 +80,66 @@ def get_messages(conversation_id: str):
     return {"messages": result.data}
 
 
+def _run_completion(messages, model, with_tools=True):
+    """Single call to Groq. Raises on failure so the caller can fall back."""
+    kwargs = dict(model=model, messages=messages, temperature=0.4, max_tokens=2000)
+    if with_tools:
+        kwargs["tools"] = TOOL_DEFINITIONS
+        kwargs["tool_choice"] = "auto"
+    return groq_client.chat.completions.create(**kwargs)
+
+
+def _get_reply(messages, model):
+    """
+    Runs the tool-calling loop for one model. Any single tool failure is caught
+    and fed back to the model as an error string (never crashes the request).
+    Returns the final text reply, or raises if the model call itself fails.
+    """
+    MAX_TOOL_ROUNDS = 4
+    for _ in range(MAX_TOOL_ROUNDS):
+        completion = _run_completion(messages, model)
+        msg = completion.choices[0].message
+
+        if not msg.tool_calls:
+            return msg.content
+
+        messages.append(
+            {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+        )
+
+        for tc in msg.tool_calls:
+            fn_name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+
+            fn = TOOL_FUNCTIONS.get(fn_name)
+            try:
+                result = fn(args) if fn else f"Unknown tool: {fn_name}"
+            except Exception as tool_error:
+                # A single tool failing should never crash the whole reply —
+                # tell the model it failed so it can respond gracefully instead.
+                result = f"Tool '{fn_name}' failed: {str(tool_error)}"
+
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+
+    # Ran out of tool-call rounds — force a plain final answer, no more tools
+    completion = _run_completion(messages, model, with_tools=False)
+    return completion.choices[0].message.content
+
+
 @app.post("/chat")
 def chat(req: ChatRequest):
     if not req.message.strip():
@@ -82,88 +155,43 @@ def chat(req: ChatRequest):
         .execute()
         .data
     )
+    is_first_message = len(history) == 0
 
     # 2. Save the user's new message
     sb.table("messages").insert(
-        {
-            "conversation_id": req.conversation_id,
-            "role": "user",
-            "content": req.message,
-        }
+        {"conversation_id": req.conversation_id, "role": "user", "content": req.message}
     ).execute()
+
+    # If this is the first message in the conversation, use it as the sidebar title
+    if is_first_message:
+        title = req.message.strip()[:60]
+        sb.table("conversations").update({"title": title}).eq("id", req.conversation_id).execute()
 
     # 3. Build the message list for the model
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += [{"role": h["role"], "content": h["content"]} for h in history]
     messages.append({"role": "user", "content": req.message})
 
-    # 4. Call Groq (Llama 3.3 70B), allowing it to call live-data tools.
-    # The loop lets the model: ask for a tool -> we run it -> feed result back ->
-    # model either asks for another tool or gives a final answer.
-    try:
-        MAX_TOOL_ROUNDS = 4
-        for _ in range(MAX_TOOL_ROUNDS):
-            completion = groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=0.4,
-                max_tokens=2000,
-                tools=TOOL_DEFINITIONS,
-                tool_choice="auto",
-            )
-            msg = completion.choices[0].message
+    # 4. Try the primary model first; fall back to a lighter free model on failure
+    # instead of surfacing a raw error to the user.
+    reply = None
+    last_error = None
+    for model in (MODEL_NAME, FALLBACK_MODEL_NAME):
+        try:
+            # Each attempt needs its own copy of messages since the tool loop mutates it
+            reply = _get_reply(list(messages), model)
+            break
+        except Exception as e:
+            last_error = e
+            continue
 
-            if not msg.tool_calls:
-                reply = msg.content
-                break
-
-            # Model wants to call one or more tools — run them and feed results back
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                }
-            )
-
-            for tc in msg.tool_calls:
-                fn_name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-
-                fn = TOOL_FUNCTIONS.get(fn_name)
-                result = fn(args) if fn else f"Unknown tool: {fn_name}"
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": str(result),
-                    }
-                )
-        else:
-            # Ran out of rounds — force a final answer with no more tool calls
-            completion = groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=0.4,
-                max_tokens=2000,
-            )
-            reply = completion.choices[0].message.content
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM call failed: {str(e)}")
+    if reply is None:
+        reply = (
+            "I couldn't reach the AI model just now — this is usually a temporary "
+            "rate limit or connectivity issue. Please try again in a moment."
+        )
+        # Still log the real error server-side for debugging
+        print(f"Both models failed: {last_error}")
 
     # 5. Save the assistant's reply
     sb.table("messages").insert(
