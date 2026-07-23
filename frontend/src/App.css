@@ -248,6 +248,8 @@ body {
   justify-content: space-between;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .header-brand {
@@ -265,6 +267,17 @@ body {
   font-size: 18px;
   font-weight: 600;
   margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-provider-select {
+  width: auto;
+  max-width: 200px;
 }
 
 .new-chat-btn {
