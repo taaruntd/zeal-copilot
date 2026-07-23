@@ -79,7 +79,7 @@ def _openrouter_call(messages, model, with_tools=True):
             "Content-Type": "application/json",
         },
         json=body,
-        timeout=30,
+        timeout=60,
     )
     try:
         resp.raise_for_status()
@@ -206,7 +206,7 @@ def _gemini_reply(system_prompt, history, user_message):
         url,
         json=body,
         headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
-        timeout=30,
+        timeout=60,
     )
     if not resp.ok:
         # Surface Google's actual error message (e.g. "API not enabled for this
