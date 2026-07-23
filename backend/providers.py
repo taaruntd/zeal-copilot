@@ -75,7 +75,19 @@ def _openrouter_call(messages, model, with_tools=True):
         json=body,
         timeout=30,
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        # Surface OpenRouter's actual error message instead of the generic
+        # "Not Found for url" text, which hides the real reason. Keep raising
+        # the same HTTPError type (with .response attached) so the 404-retry
+        # logic in get_reply() still works.
+        try:
+            detail = resp.json().get("error", {}).get("message", resp.text)
+        except ValueError:
+            detail = resp.text
+        e.args = (f"{e.args[0]} — {detail}",)
+        raise
     data = resp.json()
     msg = data["choices"][0]["message"]
     tool_calls = msg.get("tool_calls") or []
@@ -190,7 +202,15 @@ def _gemini_reply(system_prompt, history, user_message):
         headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface Google's actual error message (e.g. "API not enabled for this
+        # project", "model retired") instead of requests' generic "Not Found for
+        # url" text, which hides the real reason.
+        try:
+            detail = resp.json().get("error", {}).get("message", resp.text)
+        except ValueError:
+            detail = resp.text
+        raise RuntimeError(f"Gemini API error ({resp.status_code}): {detail}")
     data = resp.json()
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
