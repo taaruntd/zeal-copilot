@@ -4,10 +4,49 @@ import ReactMarkdown from 'react-markdown';
 import { API_URL } from './config.js';
 import './App.css';
 
+// Some models (especially routed free ones) emit their chain-of-thought
+// wrapped in <think>...</think> before the real answer. Split it out so it
+// renders as a collapsible "Thinking" section instead of leaking into the
+// visible reply.
+function splitThinking(raw) {
+  if (!raw) return { thinking: null, answer: raw };
+  const match = raw.match(/<think>([\s\S]*?)<\/think>/i);
+  if (!match) return { thinking: null, answer: raw };
+  const thinking = match[1].trim();
+  let answer = (raw.slice(0, match.index) + raw.slice(match.index + match[0].length)).trim();
+  // Some models wrap the whole remaining reply in stray braces — strip a
+  // single matching leading/trailing brace if present.
+  if (answer.startsWith('{') && answer.endsWith('}')) {
+    answer = answer.slice(1, -1).trim();
+  }
+  return { thinking, answer };
+}
+
+function AssistantMessage({ content }) {
+  const { thinking, answer } = splitThinking(content);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {thinking && (
+        <div className="thinking-block">
+          <button className="thinking-toggle" onClick={() => setOpen((o) => !o)}>
+            💭 {open ? 'Hide thinking' : 'Show thinking'}
+          </button>
+          {open && <div className="thinking-content">{thinking}</div>}
+        </div>
+      )}
+      <ReactMarkdown>{answer}</ReactMarkdown>
+    </>
+  );
+}
+
 export default function App() {
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile off-canvas
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem('sidebarCollapsed') === 'true'
+  ); // desktop collapse
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -33,6 +72,10 @@ export default function App() {
   }, [provider]);
 
   useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
     axios
       .get(`${API_URL}/providers`)
       .then((r) => setProviderList(r.data.providers || []))
@@ -50,11 +93,13 @@ export default function App() {
       .catch(() => {});
   };
 
-  // Every time the app is opened/reloaded, start a brand new conversation.
-  // Past conversations are never lost — they're still in the sidebar to reopen.
+  // Every time the app is opened/reloaded, start with a blank, unsaved chat.
+  // Nothing is written to the database until the user actually sends a
+  // message — this avoids filling the sidebar with empty "New chat" entries.
   useEffect(() => {
     loadConversationList();
-    createNewConversation();
+    setConversationId(null);
+    setMessages([]);
   }, []);
 
   const loadHistory = (id) => {
@@ -68,21 +113,17 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  const createNewConversation = () => {
-    axios
-      .post(`${API_URL}/conversations`)
-      .then((r) => {
-        setConversationId(r.data.conversation_id);
-        localStorage.setItem('conversation_id', r.data.conversation_id);
-        setMessages([]);
-        loadConversationList();
-      })
-      .catch(() => setError('Could not reach backend. Check API_URL in config.js.'));
+  // Clears the current view back to a blank, unsaved chat. Does NOT create a
+  // database row — that only happens when a message is actually sent.
+  const startNewChat = () => {
+    setConversationId(null);
+    setMessages([]);
+    setError(null);
+    setSidebarOpen(false);
   };
 
   const switchConversation = (id) => {
     setConversationId(id);
-    localStorage.setItem('conversation_id', id);
     setMessages([]);
     setError(null);
     loadHistory(id);
@@ -113,7 +154,7 @@ export default function App() {
       .then(() => {
         loadConversationList();
         if (id === conversationId) {
-          createNewConversation();
+          startNewChat();
         }
       })
       .catch(() => setError('Could not delete that conversation.'));
@@ -123,7 +164,7 @@ export default function App() {
 
   const handleImageSelect = (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow selecting the same file again later
+    e.target.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       setError('Please choose an image file.');
@@ -141,23 +182,31 @@ export default function App() {
   const removeImage = () => setImagePreview(null);
 
   const send = async () => {
-    if ((!input.trim() && !imagePreview) || !conversationId || loading) return;
+    if ((!input.trim() && !imagePreview) || loading) return;
     const userMsg = { role: 'user', content: input, image: imagePreview };
     setMessages((prev) => [...prev, userMsg]);
     const sentImage = imagePreview;
+    const sentText = input;
     setInput('');
     setImagePreview(null);
     setLoading(true);
     setError(null);
     try {
+      let activeId = conversationId;
+      if (!activeId) {
+        const created = await axios.post(`${API_URL}/conversations`);
+        activeId = created.data.conversation_id;
+        setConversationId(activeId);
+      }
+
       const res = await axios.post(`${API_URL}/chat`, {
-        conversation_id: conversationId,
-        message: userMsg.content,
+        conversation_id: activeId,
+        message: sentText,
         provider,
         image: sentImage,
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: res.data.reply }]);
-      loadConversationList(); // refresh sidebar so title/order updates
+      loadConversationList();
     } catch (e) {
       setError('Something went wrong reaching the backend. Try again.');
     } finally {
@@ -174,12 +223,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
           <span>History</span>
-          <button className="icon-btn" onClick={() => setSidebarOpen(false)}>✕</button>
+          <button className="icon-btn mobile-only" onClick={() => setSidebarOpen(false)}>✕</button>
         </div>
-        <button className="new-chat-btn full-width" onClick={createNewConversation}>
+        <button className="new-chat-btn full-width" onClick={startNewChat}>
           + New Chat
         </button>
         <div className="conversation-list">
@@ -241,26 +290,24 @@ export default function App() {
       <div className="app">
         <header className="header">
           <div className="header-brand">
-            <button className="icon-btn menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
+            <button
+              className="icon-btn sidebar-toggle-btn mobile-only"
+              title="Open history"
+              onClick={() => setSidebarOpen(true)}
+            >
+              ☰
+            </button>
+            <button
+              className="icon-btn sidebar-toggle-btn desktop-only"
+              title={sidebarCollapsed ? 'Show history' : 'Hide history'}
+              onClick={() => setSidebarCollapsed((c) => !c)}
+            >
+              {sidebarCollapsed ? '☰' : '⟨'}
+            </button>
             <img src="/zeal_logo_transparent.png" alt="Zeal" className="header-logo" />
             <h1>Zeal Co-Pilot</h1>
           </div>
-          <div className="header-actions">
-            <select
-              id="provider-select"
-              className="provider-select header-provider-select"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              title="Choose AI model"
-            >
-              {providerList.map((p) => (
-                <option key={p.id} value={p.id} disabled={!p.available}>
-                  {p.label}{!p.available ? ' (not configured)' : ''}
-                </option>
-              ))}
-            </select>
-            <button className="new-chat-btn" onClick={createNewConversation}>New Chat</button>
-          </div>
+          <button className="new-chat-btn" onClick={startNewChat}>New Chat</button>
         </header>
 
         <div className="chat-window">
@@ -276,7 +323,7 @@ export default function App() {
               <div className={`bubble ${m.role}`}>
                 {m.image && <img src={m.image} alt="attached" className="bubble-image" />}
                 {m.role === 'assistant' ? (
-                  <ReactMarkdown>{m.content}</ReactMarkdown>
+                  <AssistantMessage content={m.content} />
                 ) : (
                   m.content
                 )}
@@ -285,7 +332,11 @@ export default function App() {
           ))}
           {loading && (
             <div className="bubble-row assistant">
-              <div className="bubble assistant typing">Thinking…</div>
+              <div className="bubble assistant typing">
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </div>
             </div>
           )}
           {error && <div className="error-banner">{error}</div>}
@@ -298,6 +349,22 @@ export default function App() {
             <button className="icon-btn small" onClick={removeImage} title="Remove image">✕</button>
           </div>
         )}
+
+        <div className="input-toolbar">
+          <select
+            id="provider-select"
+            className="provider-select toolbar-provider-select"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+            title="Choose AI model"
+          >
+            {providerList.map((p) => (
+              <option key={p.id} value={p.id} disabled={!p.available}>
+                {p.label}{!p.available ? ' (not configured)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div className="input-row">
           <input
