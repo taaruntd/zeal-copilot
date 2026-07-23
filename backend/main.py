@@ -1,13 +1,12 @@
 import os
-import json
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import Groq
 from supabase import create_client
 from dotenv import load_dotenv
 from persona import SYSTEM_PROMPT
-from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
+import providers
 
 load_dotenv()
 
@@ -22,27 +21,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-if not all([GROQ_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    raise RuntimeError(
-        "Missing required environment variables. "
-        "Set GROQ_API_KEY, SUPABASE_URL, SUPABASE_KEY."
-    )
+if not all([SUPABASE_URL, SUPABASE_KEY]):
+    raise RuntimeError("Missing required environment variables. Set SUPABASE_URL, SUPABASE_KEY.")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_NAME = "llama-3.3-70b-versatile"
-FALLBACK_MODEL_NAME = "llama-3.1-8b-instant"  # lighter/faster free model, used if primary fails
 HISTORY_LIMIT = 20  # how many past messages to feed back as context
+VALID_PROVIDERS = {"groq", "openrouter", "gemini"}
 
 
 class ChatRequest(BaseModel):
     conversation_id: str
     message: str
+    provider: str = "groq"
+    image: Optional[str] = None  # base64 data URL, e.g. "data:image/png;base64,...."
 
 
 class RenameRequest(BaseModel):
@@ -52,6 +47,20 @@ class RenameRequest(BaseModel):
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Zeal Co-Pilot backend is running"}
+
+
+@app.get("/providers")
+def list_providers():
+    """Tells the frontend which providers actually have API keys configured,
+    so it can disable/hide options that won't work."""
+    available = providers.available_providers()
+    return {
+        "providers": [
+            {"id": "groq", "label": "Groq (Llama) — with live data tools", "available": available["groq"]},
+            {"id": "openrouter", "label": "OpenRouter — with live data tools", "available": available["openrouter"]},
+            {"id": "gemini", "label": "Gemini — no live data tools", "available": available["gemini"]},
+        ]
+    }
 
 
 @app.get("/conversations")
@@ -101,70 +110,12 @@ def get_messages(conversation_id: str):
     return {"messages": result.data}
 
 
-def _run_completion(messages, model, with_tools=True):
-    """Single call to Groq. Raises on failure so the caller can fall back."""
-    kwargs = dict(model=model, messages=messages, temperature=0.4, max_tokens=2000)
-    if with_tools:
-        kwargs["tools"] = TOOL_DEFINITIONS
-        kwargs["tool_choice"] = "auto"
-    return groq_client.chat.completions.create(**kwargs)
-
-
-def _get_reply(messages, model):
-    """
-    Runs the tool-calling loop for one model. Any single tool failure is caught
-    and fed back to the model as an error string (never crashes the request).
-    Returns the final text reply, or raises if the model call itself fails.
-    """
-    MAX_TOOL_ROUNDS = 4
-    for _ in range(MAX_TOOL_ROUNDS):
-        completion = _run_completion(messages, model)
-        msg = completion.choices[0].message
-
-        if not msg.tool_calls:
-            return msg.content
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in msg.tool_calls
-                ],
-            }
-        )
-
-        for tc in msg.tool_calls:
-            fn_name = tc.function.name
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-
-            fn = TOOL_FUNCTIONS.get(fn_name)
-            try:
-                result = fn(args) if fn else f"Unknown tool: {fn_name}"
-            except Exception as tool_error:
-                # A single tool failing should never crash the whole reply —
-                # tell the model it failed so it can respond gracefully instead.
-                result = f"Tool '{fn_name}' failed: {str(tool_error)}"
-
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
-
-    # Ran out of tool-call rounds — force a plain final answer, no more tools
-    completion = _run_completion(messages, model, with_tools=False)
-    return completion.choices[0].message.content
-
-
 @app.post("/chat")
 def chat(req: ChatRequest):
-    if not req.message.strip():
+    if not req.message.strip() and not req.image:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    provider = req.provider if req.provider in VALID_PROVIDERS else "groq"
 
     # 1. Fetch conversation history
     history = (
@@ -178,50 +129,41 @@ def chat(req: ChatRequest):
     )
     is_first_message = len(history) == 0
 
-    # 2. Save the user's new message
+    # 2. Save the user's new message. Images aren't persisted to the database
+    # (keeps rows small and avoids needing file storage) — just a text marker
+    # so the conversation history still reads sensibly on reload.
+    stored_user_content = req.message.strip()
+    if req.image:
+        stored_user_content = (stored_user_content + " " if stored_user_content else "") + "[Image attached]"
+
     sb.table("messages").insert(
-        {"conversation_id": req.conversation_id, "role": "user", "content": req.message}
+        {"conversation_id": req.conversation_id, "role": "user", "content": stored_user_content}
     ).execute()
 
     # If this is the first message in the conversation, use it as the sidebar title
     if is_first_message:
-        clean = " ".join(req.message.strip().split())  # collapse newlines/extra spaces
+        clean = " ".join(stored_user_content.strip().split())  # collapse newlines/extra spaces
         title = clean[:57] + "..." if len(clean) > 57 else clean
         sb.table("conversations").update({"title": title}).eq("id", req.conversation_id).execute()
 
-    # 3. Build the message list for the model
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += [{"role": h["role"], "content": h["content"]} for h in history]
-    messages.append({"role": "user", "content": req.message})
-
-    # 4. Try the primary model first; fall back to a lighter free model on failure
-    # instead of surfacing a raw error to the user.
-    reply = None
-    last_error = None
-    for model in (MODEL_NAME, FALLBACK_MODEL_NAME):
-        try:
-            # Each attempt needs its own copy of messages since the tool loop mutates it
-            reply = _get_reply(list(messages), model)
-            break
-        except Exception as e:
-            last_error = e
-            continue
-
-    if reply is None:
+    # 3. Get the reply — image messages always go through Groq's vision model,
+    # regardless of which text provider is selected (only Groq is wired for
+    # images right now). Otherwise use whichever provider was chosen.
+    try:
+        if req.image:
+            reply = providers.get_vision_reply(SYSTEM_PROMPT, history, req.message, req.image)
+        else:
+            reply = providers.get_reply(provider, SYSTEM_PROMPT, history, req.message)
+    except Exception as e:
+        print(f"Provider '{provider}' (image={bool(req.image)}) failed: {e}")
         reply = (
-            "I couldn't reach the AI model just now — this is usually a temporary "
-            "rate limit or connectivity issue. Please try again in a moment."
+            "I couldn't process that just now — this is usually a temporary rate "
+            "limit, missing API key, or connectivity issue. Try again in a moment."
         )
-        # Still log the real error server-side for debugging
-        print(f"Both models failed: {last_error}")
 
-    # 5. Save the assistant's reply
+    # 4. Save the assistant's reply
     sb.table("messages").insert(
-        {
-            "conversation_id": req.conversation_id,
-            "role": "assistant",
-            "content": reply,
-        }
+        {"conversation_id": req.conversation_id, "role": "assistant", "content": reply}
     ).execute()
 
-    return {"reply": reply}
+    return {"reply": reply, "provider": provider}
