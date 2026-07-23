@@ -24,8 +24,14 @@ GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
 # future swap doesn't need a code change — just update GROQ_VISION_MODEL in
 # Render's Environment tab and redeploy.
 GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# openrouter/free is OpenRouter's "Free Models Router" — it automatically
+# picks a currently-available free model per request (and filters for tool-
+# calling support automatically), instead of us pinning to one specific free
+# model that eventually gets discontinued. Stays free, no credits needed.
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+# gemini-2.5-flash was cut off from new users; gemini-3.5-flash is the
+# current free-tier-eligible model as of mid-2026.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
