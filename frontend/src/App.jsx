@@ -231,19 +231,6 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
-          <label className="provider-label" htmlFor="provider-select">Model</label>
-          <select
-            id="provider-select"
-            className="provider-select"
-            value={provider}
-            onChange={(e) => setProvider(e.target.value)}
-          >
-            {providerList.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.available}>
-                {p.label}{!p.available ? ' (not configured)' : ''}
-              </option>
-            ))}
-          </select>
           <button className="theme-toggle" onClick={toggleTheme}>
             <span>{theme === 'dark' ? '🌙 Dark mode' : '☀️ Light mode'}</span>
             <span>Switch</span>
@@ -258,7 +245,22 @@ export default function App() {
             <img src="/zeal_logo_transparent.png" alt="Zeal" className="header-logo" />
             <h1>Zeal Co-Pilot</h1>
           </div>
-          <button className="new-chat-btn" onClick={createNewConversation}>New Chat</button>
+          <div className="header-actions">
+            <select
+              id="provider-select"
+              className="provider-select header-provider-select"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              title="Choose AI model"
+            >
+              {providerList.map((p) => (
+                <option key={p.id} value={p.id} disabled={!p.available}>
+                  {p.label}{!p.available ? ' (not configured)' : ''}
+                </option>
+              ))}
+            </select>
+            <button className="new-chat-btn" onClick={createNewConversation}>New Chat</button>
+          </div>
         </header>
 
         <div className="chat-window">
