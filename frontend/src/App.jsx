@@ -15,12 +15,29 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  const [providerList, setProviderList] = useState([
+    { id: 'groq', label: 'Groq (Llama)', available: true },
+  ]);
+  const [provider, setProvider] = useState(() => localStorage.getItem('provider') || 'groq');
+  const [imagePreview, setImagePreview] = useState(null); // base64 data URL
   const bottomRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('provider', provider);
+  }, [provider]);
+
+  useEffect(() => {
+    axios
+      .get(`${API_URL}/providers`)
+      .then((r) => setProviderList(r.data.providers || []))
+      .catch(() => {});
+  }, []);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
@@ -33,16 +50,11 @@ export default function App() {
       .catch(() => {});
   };
 
-  // On first load: restore the last active conversation, or create a new one
+  // Every time the app is opened/reloaded, start a brand new conversation.
+  // Past conversations are never lost — they're still in the sidebar to reopen.
   useEffect(() => {
     loadConversationList();
-    const stored = localStorage.getItem('conversation_id');
-    if (stored) {
-      setConversationId(stored);
-      loadHistory(stored);
-    } else {
-      createNewConversation();
-    }
+    createNewConversation();
   }, []);
 
   const loadHistory = (id) => {
@@ -107,17 +119,42 @@ export default function App() {
       .catch(() => setError('Could not delete that conversation.'));
   };
 
+  const MAX_IMAGE_MB = 4;
+
+  const handleImageSelect = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow selecting the same file again later
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image file.');
+      return;
+    }
+    if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
+      setError(`Image is too large — please use one under ${MAX_IMAGE_MB}MB.`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setImagePreview(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = () => setImagePreview(null);
+
   const send = async () => {
-    if (!input.trim() || !conversationId || loading) return;
-    const userMsg = { role: 'user', content: input };
+    if ((!input.trim() && !imagePreview) || !conversationId || loading) return;
+    const userMsg = { role: 'user', content: input, image: imagePreview };
     setMessages((prev) => [...prev, userMsg]);
+    const sentImage = imagePreview;
     setInput('');
+    setImagePreview(null);
     setLoading(true);
     setError(null);
     try {
       const res = await axios.post(`${API_URL}/chat`, {
         conversation_id: conversationId,
         message: userMsg.content,
+        provider,
+        image: sentImage,
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: res.data.reply }]);
       loadConversationList(); // refresh sidebar so title/order updates
@@ -194,6 +231,19 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
+          <label className="provider-label" htmlFor="provider-select">Model</label>
+          <select
+            id="provider-select"
+            className="provider-select"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+          >
+            {providerList.map((p) => (
+              <option key={p.id} value={p.id} disabled={!p.available}>
+                {p.label}{!p.available ? ' (not configured)' : ''}
+              </option>
+            ))}
+          </select>
           <button className="theme-toggle" onClick={toggleTheme}>
             <span>{theme === 'dark' ? '🌙 Dark mode' : '☀️ Light mode'}</span>
             <span>Switch</span>
@@ -222,6 +272,7 @@ export default function App() {
           {messages.map((m, i) => (
             <div key={i} className={`bubble-row ${m.role}`}>
               <div className={`bubble ${m.role}`}>
+                {m.image && <img src={m.image} alt="attached" className="bubble-image" />}
                 {m.role === 'assistant' ? (
                   <ReactMarkdown>{m.content}</ReactMarkdown>
                 ) : (
@@ -239,7 +290,28 @@ export default function App() {
           <div ref={bottomRef} />
         </div>
 
+        {imagePreview && (
+          <div className="image-preview-row">
+            <img src={imagePreview} alt="preview" className="image-preview-thumb" />
+            <button className="icon-btn small" onClick={removeImage} title="Remove image">✕</button>
+          </div>
+        )}
+
         <div className="input-row">
+          <input
+            type="file"
+            accept="image/*"
+            ref={fileInputRef}
+            onChange={handleImageSelect}
+            style={{ display: 'none' }}
+          />
+          <button
+            className="attach-btn"
+            title="Attach an image"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -247,7 +319,7 @@ export default function App() {
             placeholder="Type your question... (Enter to send, Shift+Enter for new line)"
             rows={2}
           />
-          <button onClick={send} disabled={loading || !input.trim()}>
+          <button onClick={send} disabled={loading || (!input.trim() && !imagePreview)}>
             Send
           </button>
         </div>
