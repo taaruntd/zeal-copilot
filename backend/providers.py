@@ -19,7 +19,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # multimodal, handles images
+# Groq's vision-capable model lineup changes often (they deprecated the
+# previous one, llama-4-scout, in June 2026). Configurable via env var so a
+# future swap doesn't need a code change — just update GROQ_VISION_MODEL in
+# Render's Environment tab and redeploy.
+GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
@@ -177,11 +181,15 @@ def _gemini_reply(system_prompt, history, user_message):
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2000},
     }
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    # Google's newer "Auth key" format (starts with AQ.) must be sent as a
+    # header, not the old ?key= URL query param the API used to require.
+    resp = requests.post(
+        url,
+        json=body,
+        headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+        timeout=30,
     )
-    resp = requests.post(url, json=body, timeout=30)
     resp.raise_for_status()
     data = resp.json()
     return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -203,7 +211,17 @@ def get_reply(provider, system_prompt, history, user_message):
     if provider == "openrouter":
         if not OPENROUTER_API_KEY:
             raise RuntimeError("OpenRouter is not configured (missing OPENROUTER_API_KEY).")
-        return _run_tool_loop(_openrouter_call, OPENROUTER_MODEL, list(messages))
+        try:
+            return _run_tool_loop(_openrouter_call, OPENROUTER_MODEL, list(messages))
+        except requests.exceptions.HTTPError as e:
+            # Some free OpenRouter models don't support tool/function calling at
+            # all and return 404 "No endpoints found that support tool use" the
+            # moment tools are attached. Fall back to a plain call with no tools
+            # rather than failing outright — live-data tools just won't fire.
+            if e.response is not None and e.response.status_code == 404:
+                result = _openrouter_call(list(messages), OPENROUTER_MODEL, with_tools=False)
+                return result["content"]
+            raise
 
     if provider == "gemini":
         if not GEMINI_API_KEY:
