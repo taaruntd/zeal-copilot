@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import { API_URL } from './config.js';
+import VoiceNotes from './VoiceNotes.jsx';
 import './App.css';
 
 // Some models (especially routed free ones) emit their chain-of-thought
@@ -41,6 +42,7 @@ function AssistantMessage({ content }) {
 }
 
 export default function App() {
+  const [view, setView] = useState('chat'); // 'chat' | 'voice' — separate sections
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile off-canvas
@@ -59,8 +61,36 @@ export default function App() {
   ]);
   const [provider, setProvider] = useState(() => localStorage.getItem('provider') || 'groq');
   const [imagePreview, setImagePreview] = useState(null); // base64 data URL
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Basic browser-native dictation for the chat input — separate from, and
+  // much simpler than, the Whisper-based Voice Notes feature. Just fills
+  // the text box; the user can edit before sending like normal.
+  const SpeechRecognitionAPI =
+    typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  const toggleDictation = () => {
+    if (!SpeechRecognitionAPI) return;
+    if (isListening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const recognition = new SpeechRecognitionAPI();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput((prev) => (prev ? prev + ' ' : '') + transcript);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -228,56 +258,76 @@ export default function App() {
           <span>History</span>
           <button className="icon-btn mobile-only" onClick={() => setSidebarOpen(false)}>✕</button>
         </div>
-        <button className="new-chat-btn full-width" onClick={startNewChat}>
-          + New Chat
-        </button>
-        <div className="conversation-list">
-          {conversations.length === 0 && (
-            <div className="empty-sidebar">No conversations yet</div>
-          )}
-          {conversations.map((c) => (
-            <div
-              key={c.id}
-              className={`conversation-item ${c.id === conversationId ? 'active' : ''}`}
-              onClick={() => switchConversation(c.id)}
-            >
-              {renamingId === c.id ? (
-                <input
-                  autoFocus
-                  className="rename-input"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(c.id);
-                    if (e.key === 'Escape') setRenamingId(null);
-                  }}
-                  onBlur={() => commitRename(c.id)}
-                />
-              ) : (
-                <>
-                  <span className="conversation-title">{c.title || 'New chat'}</span>
-                  <span className="conversation-actions">
-                    <button
-                      className="icon-btn small"
-                      title="Rename"
-                      onClick={(e) => startRename(e, c)}
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      className="icon-btn small"
-                      title="Delete"
-                      onClick={(e) => deleteConversation(e, c.id)}
-                    >
-                      🗑️
-                    </button>
-                  </span>
-                </>
-              )}
-            </div>
-          ))}
+
+        <div className="section-switcher">
+          <button
+            className={`section-tab ${view === 'chat' ? 'active' : ''}`}
+            onClick={() => setView('chat')}
+          >
+            💬 Chat
+          </button>
+          <button
+            className={`section-tab ${view === 'voice' ? 'active' : ''}`}
+            onClick={() => setView('voice')}
+          >
+            🎙️ Voice Notes
+          </button>
         </div>
+
+        {view === 'chat' && (
+          <button className="new-chat-btn full-width" onClick={startNewChat}>
+            + New Chat
+          </button>
+        )}
+        {view === 'chat' && (
+          <div className="conversation-list">
+            {conversations.length === 0 && (
+              <div className="empty-sidebar">No conversations yet</div>
+            )}
+            {conversations.map((c) => (
+              <div
+                key={c.id}
+                className={`conversation-item ${c.id === conversationId ? 'active' : ''}`}
+                onClick={() => switchConversation(c.id)}
+              >
+                {renamingId === c.id ? (
+                  <input
+                    autoFocus
+                    className="rename-input"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(c.id);
+                      if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                    onBlur={() => commitRename(c.id)}
+                  />
+                ) : (
+                  <>
+                    <span className="conversation-title">{c.title || 'New chat'}</span>
+                    <span className="conversation-actions">
+                      <button
+                        className="icon-btn small"
+                        title="Rename"
+                        onClick={(e) => startRename(e, c)}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        className="icon-btn small"
+                        title="Delete"
+                        onClick={(e) => deleteConversation(e, c.id)}
+                      >
+                        🗑️
+                      </button>
+                    </span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="sidebar-footer">
           <button className="theme-toggle" onClick={toggleTheme}>
@@ -305,93 +355,110 @@ export default function App() {
               {sidebarCollapsed ? '☰' : '⟨'}
             </button>
             <img src="/zeal_logo_transparent.png" alt="Zeal" className="header-logo" />
-            <h1>Zeal Co-Pilot</h1>
+            <h1>{view === 'chat' ? 'Zeal Co-Pilot' : 'Voice Notes'}</h1>
           </div>
-          <button className="new-chat-btn" onClick={startNewChat}>New Chat</button>
+          {view === 'chat' && (
+            <button className="new-chat-btn" onClick={startNewChat}>New Chat</button>
+          )}
         </header>
 
-        <div className="chat-window">
-          {messages.length === 0 && !loading && (
-            <div className="empty-state">
-              Ask me anything — everyday questions, business strategy for any
-              industry, planning, writing, or general knowledge. Nothing here is
-              limited to one topic.
+        {view === 'voice' ? (
+          <VoiceNotes />
+        ) : (
+          <>
+            <div className="chat-window">
+              {messages.length === 0 && !loading && (
+                <div className="empty-state">
+                  Ask me anything — everyday questions, business strategy for any
+                  industry, planning, writing, or general knowledge. Nothing here is
+                  limited to one topic.
+                </div>
+              )}
+              {messages.map((m, i) => (
+                <div key={i} className={`bubble-row ${m.role}`}>
+                  <div className={`bubble ${m.role}`}>
+                    {m.image && <img src={m.image} alt="attached" className="bubble-image" />}
+                    {m.role === 'assistant' ? (
+                      <AssistantMessage content={m.content} />
+                    ) : (
+                      m.content
+                    )}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="bubble-row assistant">
+                  <div className="bubble assistant typing">
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                  </div>
+                </div>
+              )}
+              {error && <div className="error-banner">{error}</div>}
+              <div ref={bottomRef} />
             </div>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className={`bubble-row ${m.role}`}>
-              <div className={`bubble ${m.role}`}>
-                {m.image && <img src={m.image} alt="attached" className="bubble-image" />}
-                {m.role === 'assistant' ? (
-                  <AssistantMessage content={m.content} />
-                ) : (
-                  m.content
-                )}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="bubble-row assistant">
-              <div className="bubble assistant typing">
-                <span className="typing-dot" />
-                <span className="typing-dot" />
-                <span className="typing-dot" />
-              </div>
-            </div>
-          )}
-          {error && <div className="error-banner">{error}</div>}
-          <div ref={bottomRef} />
-        </div>
 
-        {imagePreview && (
-          <div className="image-preview-row">
-            <img src={imagePreview} alt="preview" className="image-preview-thumb" />
-            <button className="icon-btn small" onClick={removeImage} title="Remove image">✕</button>
-          </div>
+            {imagePreview && (
+              <div className="image-preview-row">
+                <img src={imagePreview} alt="preview" className="image-preview-thumb" />
+                <button className="icon-btn small" onClick={removeImage} title="Remove image">✕</button>
+              </div>
+            )}
+
+            <div className="input-toolbar">
+              <select
+                id="provider-select"
+                className="provider-select toolbar-provider-select"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                title="Choose AI model"
+              >
+                {providerList.map((p) => (
+                  <option key={p.id} value={p.id} disabled={!p.available}>
+                    {p.label}{!p.available ? ' (not configured)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="input-row">
+              <input
+                type="file"
+                accept="image/*"
+                ref={fileInputRef}
+                onChange={handleImageSelect}
+                style={{ display: 'none' }}
+              />
+              <button
+                className="attach-btn"
+                title="Attach an image"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                📎
+              </button>
+              {SpeechRecognitionAPI && (
+                <button
+                  className={`attach-btn ${isListening ? 'listening' : ''}`}
+                  title={isListening ? 'Stop dictation' : 'Dictate a message'}
+                  onClick={toggleDictation}
+                >
+                  🎤
+                </button>
+              )}
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type your question... (Enter to send, Shift+Enter for new line)"
+                rows={2}
+              />
+              <button onClick={send} disabled={loading || (!input.trim() && !imagePreview)}>
+                Send
+              </button>
+            </div>
+          </>
         )}
-
-        <div className="input-toolbar">
-          <select
-            id="provider-select"
-            className="provider-select toolbar-provider-select"
-            value={provider}
-            onChange={(e) => setProvider(e.target.value)}
-            title="Choose AI model"
-          >
-            {providerList.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.available}>
-                {p.label}{!p.available ? ' (not configured)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="input-row">
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            onChange={handleImageSelect}
-            style={{ display: 'none' }}
-          />
-          <button
-            className="attach-btn"
-            title="Attach an image"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            📎
-          </button>
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type your question... (Enter to send, Shift+Enter for new line)"
-            rows={2}
-          />
-          <button onClick={send} disabled={loading || (!input.trim() && !imagePreview)}>
-            Send
-          </button>
-        </div>
       </div>
     </div>
   );
