@@ -1,12 +1,13 @@
 import os
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
 from dotenv import load_dotenv
 from persona import SYSTEM_PROMPT
 import providers
+import voice
 
 load_dotenv()
 
@@ -167,3 +168,62 @@ def chat(req: ChatRequest):
     ).execute()
 
     return {"reply": reply, "provider": provider}
+
+
+# ---------------------------------------------------------------------------
+# Voice Notes — a separate feature from regular chat. Record a memo, get it
+# transcribed (Whisper, handles Hindi/mixed-language speech) and structured
+# into a short note. Has its own table, its own endpoints, nothing shared
+# with the conversations/messages tables above.
+# ---------------------------------------------------------------------------
+
+@app.get("/voice-notes")
+def list_voice_notes():
+    result = (
+        sb.table("voice_notes")
+        .select("id,title,transcript,structured,created_at")
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    return {"voice_notes": result.data}
+
+
+@app.post("/voice-notes")
+async def create_voice_note(audio: UploadFile = File(...)):
+    file_bytes = await audio.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="No audio received")
+
+    try:
+        result = voice.process_voice_note(file_bytes, audio.filename or "audio.webm")
+    except Exception as e:
+        print(f"Voice note processing failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't process that recording — try again, or check it wasn't silent/too short.",
+        )
+
+    # Pull a short title out of the structured note's TITLE: line, falling
+    # back to the first few words of the transcript if that's missing.
+    title = None
+    for line in result["structured"].splitlines():
+        if line.strip().upper().startswith("TITLE:"):
+            title = line.split(":", 1)[1].strip()
+            break
+    if not title:
+        title = " ".join(result["transcript"].split()[:8])
+
+    row = {
+        "title": title[:80],
+        "transcript": result["transcript"],
+        "structured": result["structured"],
+    }
+    saved = sb.table("voice_notes").insert(row).execute()
+    return saved.data[0]
+
+
+@app.delete("/voice-notes/{note_id}")
+def delete_voice_note(note_id: str):
+    sb.table("voice_notes").delete().eq("id", note_id).execute()
+    return {"deleted": True, "id": note_id}
