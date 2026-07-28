@@ -67,6 +67,56 @@ def structure_transcript(transcript: str) -> str:
     return completion.choices[0].message.content
 
 
+def translate_text(text: str, target_language: str) -> str:
+    """Plain verbatim translation — used for the full transcript, where we
+    want a faithful word-for-word translation, not a reformatted summary."""
+    if not groq_client:
+        raise RuntimeError("Groq is not configured (required for translation).")
+    completion = groq_client.chat.completions.create(
+        model=STRUCTURE_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"Translate the following text into {target_language}. "
+                    "Output only the translation, nothing else — no notes, "
+                    "no preamble."
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+        temperature=0.2,
+        max_tokens=2000,
+    )
+    return completion.choices[0].message.content
+
+
+def translate_structured(structured_text: str, target_language: str) -> str:
+    """Translates an already-structured note into the requested language,
+    keeping the same TITLE/SUMMARY/KEY POINTS/ACTION ITEMS format so the
+    frontend can parse it the same way regardless of language."""
+    if not groq_client:
+        raise RuntimeError("Groq is not configured (required for translation).")
+    completion = groq_client.chat.completions.create(
+        model=STRUCTURE_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"Translate the following note into {target_language}. "
+                    "Keep the exact same structure — TITLE:, SUMMARY:, "
+                    "KEY POINTS:, ACTION ITEMS: — just translate the content "
+                    "after each label. Output nothing else."
+                ),
+            },
+            {"role": "user", "content": structured_text},
+        ],
+        temperature=0.2,
+        max_tokens=600,
+    )
+    return completion.choices[0].message.content
+
+
 def process_voice_note(file_bytes: bytes, filename: str = "audio.webm") -> dict:
     """Full pipeline: transcribe, then structure. Returns both pieces so the
     caller can save whichever it wants (or both)."""
