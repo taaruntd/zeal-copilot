@@ -45,6 +45,12 @@ class RenameRequest(BaseModel):
     title: str
 
 
+class VoiceNoteEditRequest(BaseModel):
+    title: Optional[str] = None
+    transcript: Optional[str] = None
+    structured: Optional[str] = None
+
+
 class TranslateRequest(BaseModel):
     language: str
     mode: str = "structured"  # "structured" (summary) or "transcript" (verbatim)
@@ -229,12 +235,25 @@ async def create_voice_note(audio: UploadFile = File(...)):
 
 
 @app.patch("/voice-notes/{note_id}")
-def rename_voice_note(note_id: str, req: RenameRequest):
-    title = req.title.strip()[:80]
-    if not title:
-        raise HTTPException(status_code=400, detail="Title cannot be empty")
-    sb.table("voice_notes").update({"title": title}).eq("id", note_id).execute()
-    return {"id": note_id, "title": title}
+def update_voice_note(note_id: str, req: VoiceNoteEditRequest):
+    """Handles both renaming and manually correcting a voice note's
+    transcript/summary (e.g. fixing a number Whisper misheard). Only the
+    fields actually provided get updated."""
+    updates = {}
+    if req.title is not None:
+        title = req.title.strip()[:80]
+        if title:
+            updates["title"] = title
+    if req.transcript is not None:
+        updates["transcript"] = req.transcript
+    if req.structured is not None:
+        updates["structured"] = req.structured
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    sb.table("voice_notes").update(updates).eq("id", note_id).execute()
+    return {"id": note_id, **updates}
 
 
 @app.delete("/voice-notes/{note_id}")
