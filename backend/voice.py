@@ -18,15 +18,27 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-large-v3")
 STRUCTURE_MODEL = "llama-3.1-8b-instant"  # small/fast model, just for formatting
+# Translation needs stronger instruction-following than the small model
+# reliably gives on messy/slang-heavy transcripts — it was observed adding
+# commentary and word-glossaries instead of just translating. Use the same
+# solid model the main chat uses.
+TRANSLATE_MODEL = "llama-3.3-70b-versatile"
 
 STRUCTURE_PROMPT = """You turn a raw voice-memo transcript into a short, useful note.
-The transcript may be in Hindi, English, a mix of both, or another language —
-keep your output in the same language(s) the transcript uses, don't translate
-unless the transcript is unclear without it.
+The transcript may be in Hindi, English, a mix of both, or another language.
+
+For the TITLE only: always write it in English, even if the transcript and
+the rest of the note are in Hindi or another language — titles need to be
+scannable at a glance in a list, regardless of what language the note itself
+is in.
+
+For everything else (SUMMARY, KEY POINTS, ACTION ITEMS): keep your output in
+the same language(s) the transcript uses, don't translate unless the
+transcript is unclear without it.
 
 Respond in this exact format, nothing else:
 
-TITLE: <a short 5-8 word title for this note>
+TITLE: <a short 5-8 word title for this note, always in English>
 SUMMARY: <2-4 sentence plain-language summary>
 KEY POINTS:
 - <point>
@@ -73,22 +85,32 @@ def translate_text(text: str, target_language: str) -> str:
     if not groq_client:
         raise RuntimeError("Groq is not configured (required for translation).")
     completion = groq_client.chat.completions.create(
-        model=STRUCTURE_MODEL,
+        model=TRANSLATE_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    f"Translate the following text into {target_language}. "
-                    "Output only the translation, nothing else — no notes, "
-                    "no preamble."
+                    f"You are a direct translation engine. Translate the user's "
+                    f"text into {target_language}.\n\n"
+                    "STRICT RULES:\n"
+                    "- Output ONLY the translated text. Nothing else.\n"
+                    "- Do NOT repeat, quote, or restate the original text.\n"
+                    "- Do NOT explain what any word or phrase means.\n"
+                    "- Do NOT add a glossary, notes, commentary, or preamble "
+                    "like 'here is the translation'.\n"
+                    "- Do NOT wrap the output in quotation marks.\n"
+                    "- If a word is slang or unclear, translate your best "
+                    "interpretation of it directly — do not stop to explain it.\n"
+                    "- Your entire response must be the translation itself, "
+                    "in the target language, and nothing more."
                 ),
             },
             {"role": "user", "content": text},
         ],
-        temperature=0.2,
+        temperature=0,
         max_tokens=2000,
     )
-    return completion.choices[0].message.content
+    return completion.choices[0].message.content.strip()
 
 
 def translate_structured(structured_text: str, target_language: str) -> str:
@@ -98,23 +120,31 @@ def translate_structured(structured_text: str, target_language: str) -> str:
     if not groq_client:
         raise RuntimeError("Groq is not configured (required for translation).")
     completion = groq_client.chat.completions.create(
-        model=STRUCTURE_MODEL,
+        model=TRANSLATE_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    f"Translate the following note into {target_language}. "
-                    "Keep the exact same structure — TITLE:, SUMMARY:, "
-                    "KEY POINTS:, ACTION ITEMS: — just translate the content "
-                    "after each label. Output nothing else."
+                    f"You are a direct translation engine. Translate the following "
+                    f"note into {target_language}.\n\n"
+                    "STRICT RULES:\n"
+                    "- Keep the exact same structure — the labels TITLE:, "
+                    "SUMMARY:, KEY POINTS:, ACTION ITEMS: must stay in English "
+                    "as section labels; only translate the content after each one.\n"
+                    "- Do NOT repeat or quote the original language content "
+                    "anywhere in your output.\n"
+                    "- Do NOT explain what any word or phrase means.\n"
+                    "- Do NOT add a glossary, notes, or commentary of any kind.\n"
+                    "- Output ONLY the translated note in the exact same format, "
+                    "nothing else before or after it."
                 ),
             },
             {"role": "user", "content": structured_text},
         ],
-        temperature=0.2,
+        temperature=0,
         max_tokens=600,
     )
-    return completion.choices[0].message.content
+    return completion.choices[0].message.content.strip()
 
 
 def process_voice_note(file_bytes: bytes, filename: str = "audio.webm") -> dict:
