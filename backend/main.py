@@ -45,6 +45,11 @@ class RenameRequest(BaseModel):
     title: str
 
 
+class TranslateRequest(BaseModel):
+    language: str
+    mode: str = "structured"  # "structured" (summary) or "transcript" (verbatim)
+
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Zeal Co-Pilot backend is running"}
@@ -227,3 +232,35 @@ async def create_voice_note(audio: UploadFile = File(...)):
 def delete_voice_note(note_id: str):
     sb.table("voice_notes").delete().eq("id", note_id).execute()
     return {"deleted": True, "id": note_id}
+
+
+@app.post("/voice-notes/{note_id}/translate")
+def translate_voice_note(note_id: str, req: TranslateRequest):
+    """Translates a note's structured summary OR full transcript into any
+    language, on demand. Does NOT overwrite the saved original — this is a
+    view-only translation returned to the frontend each time it's requested."""
+    language = req.language.strip()
+    if not language:
+        raise HTTPException(status_code=400, detail="Language cannot be empty")
+    mode = req.mode if req.mode in ("structured", "transcript") else "structured"
+
+    result = (
+        sb.table("voice_notes")
+        .select("structured,transcript")
+        .eq("id", note_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Voice note not found")
+
+    try:
+        if mode == "transcript":
+            translated = voice.translate_text(result.data[0]["transcript"], language)
+        else:
+            translated = voice.translate_structured(result.data[0]["structured"], language)
+    except Exception as e:
+        print(f"Translation failed (mode={mode}): {e}")
+        raise HTTPException(status_code=502, detail="Translation failed — try again.")
+
+    return {"translated": translated, "language": language, "mode": mode}
