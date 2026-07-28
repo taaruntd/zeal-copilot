@@ -228,6 +228,15 @@ async def create_voice_note(audio: UploadFile = File(...)):
     return saved.data[0]
 
 
+@app.patch("/voice-notes/{note_id}")
+def rename_voice_note(note_id: str, req: RenameRequest):
+    title = req.title.strip()[:80]
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    sb.table("voice_notes").update({"title": title}).eq("id", note_id).execute()
+    return {"id": note_id, "title": title}
+
+
 @app.delete("/voice-notes/{note_id}")
 def delete_voice_note(note_id: str):
     sb.table("voice_notes").delete().eq("id", note_id).execute()
