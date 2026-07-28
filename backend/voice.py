@@ -27,19 +27,21 @@ TRANSLATE_MODEL = "llama-3.3-70b-versatile"
 STRUCTURE_PROMPT = """You turn a raw voice-memo transcript into a short, useful note.
 The transcript may be in Hindi, English, a mix of both, or another language.
 
-For the TITLE only: always write it in English, even if the transcript and
-the rest of the note are in Hindi or another language — titles need to be
-scannable at a glance in a list, regardless of what language the note itself
-is in.
+Write the ENTIRE note — TITLE, SUMMARY, KEY POINTS, and ACTION ITEMS — in
+English, always, regardless of what language the transcript is in. The
+person reading this note may not be able to read Hindi or other scripts, so
+the note itself must default to English even though the original spoken
+words were in a different language. Translate the meaning faithfully; don't
+just transliterate.
 
-For everything else (SUMMARY, KEY POINTS, ACTION ITEMS): keep your output in
-the same language(s) the transcript uses, don't translate unless the
-transcript is unclear without it.
+(The raw transcript is saved separately in its original language for an
+accurate record — you are not being asked to touch that here, only to
+produce an English note summarizing it.)
 
 Respond in this exact format, nothing else:
 
-TITLE: <a short 5-8 word title for this note, always in English>
-SUMMARY: <2-4 sentence plain-language summary>
+TITLE: <a short 5-8 word title for this note, in English>
+SUMMARY: <2-4 sentence plain-language summary, in English>
 KEY POINTS:
 - <point>
 - <point>
