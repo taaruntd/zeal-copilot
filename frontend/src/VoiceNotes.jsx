@@ -28,6 +28,14 @@ function parseStructured(text) {
   return sections;
 }
 
+// Common languages for the dropdown — "Other..." reveals a free-text box
+// for anything not listed here, so it's never actually limited to these.
+const COMMON_LANGUAGES = [
+  'English', 'Hindi', 'Spanish', 'French', 'German', 'Mandarin Chinese',
+  'Japanese', 'Korean', 'Arabic', 'Portuguese', 'Russian', 'Italian',
+  'Tamil', 'Telugu', 'Bengali', 'Marathi', 'Gujarati', 'Punjabi', 'Urdu',
+];
+
 export default function VoiceNotes() {
   const [notes, setNotes] = useState([]);
   const [recording, setRecording] = useState(false);
@@ -36,10 +44,13 @@ export default function VoiceNotes() {
   const [selectedNote, setSelectedNote] = useState(null);
   const [error, setError] = useState(null);
   const [translateLang, setTranslateLang] = useState('');
+  const [showCustomLang, setShowCustomLang] = useState(false);
   const [translated, setTranslated] = useState(null); // { language, text } — summary translation
   const [translating, setTranslating] = useState(false);
   const [translatedTranscript, setTranslatedTranscript] = useState(null); // { language, text }
   const [translatingTranscript, setTranslatingTranscript] = useState(false);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -117,10 +128,30 @@ export default function VoiceNotes() {
       .catch(() => setError('Could not delete that note.'));
   };
 
+  const startRename = (e, note) => {
+    e.stopPropagation();
+    setRenamingId(note.id);
+    setRenameValue(note.title || '');
+  };
+
+  const commitRename = (id) => {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title) return;
+    axios
+      .patch(`${API_URL}/voice-notes/${id}`, { title })
+      .then(() => {
+        setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, title } : n)));
+        if (selectedNote?.id === id) setSelectedNote((prev) => ({ ...prev, title }));
+      })
+      .catch(() => setError('Could not rename that note.'));
+  };
+
   const selectNote = (note) => {
     setSelectedNote(note);
     setTranslated(null);
     setTranslateLang('');
+    setShowCustomLang(false);
     setTranslatedTranscript(null);
   };
 
@@ -187,12 +218,32 @@ export default function VoiceNotes() {
               className={`conversation-item ${selectedNote?.id === n.id ? 'active' : ''}`}
               onClick={() => selectNote(n)}
             >
-              <span className="conversation-title">{n.title || 'Untitled note'}</span>
-              <span className="conversation-actions">
-                <button className="icon-btn small" title="Delete" onClick={(e) => deleteNote(e, n.id)}>
-                  🗑️
-                </button>
-              </span>
+              {renamingId === n.id ? (
+                <input
+                  autoFocus
+                  className="rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(n.id);
+                    if (e.key === 'Escape') setRenamingId(null);
+                  }}
+                  onBlur={() => commitRename(n.id)}
+                />
+              ) : (
+                <>
+                  <span className="conversation-title">{n.title || 'Untitled note'}</span>
+                  <span className="conversation-actions">
+                    <button className="icon-btn small" title="Rename" onClick={(e) => startRename(e, n)}>
+                      ✏️
+                    </button>
+                    <button className="icon-btn small" title="Delete" onClick={(e) => deleteNote(e, n.id)}>
+                      🗑️
+                    </button>
+                  </span>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -209,14 +260,36 @@ export default function VoiceNotes() {
             <h2>{translated ? sections?.title || selectedNote.title : selectedNote.title}</h2>
 
             <div className="translate-row">
-              <input
-                className="translate-input"
-                type="text"
-                value={translateLang}
-                onChange={(e) => setTranslateLang(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && runTranslate()}
-                placeholder="Type a language, then translate summary or transcript below"
-              />
+              <select
+                className="translate-select"
+                value={showCustomLang ? '__other__' : translateLang}
+                onChange={(e) => {
+                  if (e.target.value === '__other__') {
+                    setShowCustomLang(true);
+                    setTranslateLang('');
+                  } else {
+                    setShowCustomLang(false);
+                    setTranslateLang(e.target.value);
+                  }
+                }}
+              >
+                <option value="" disabled>Translate to...</option>
+                {COMMON_LANGUAGES.map((lang) => (
+                  <option key={lang} value={lang}>{lang}</option>
+                ))}
+                <option value="__other__">Other...</option>
+              </select>
+              {showCustomLang && (
+                <input
+                  autoFocus
+                  className="translate-input"
+                  type="text"
+                  value={translateLang}
+                  onChange={(e) => setTranslateLang(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && runTranslate()}
+                  placeholder="Type a language"
+                />
+              )}
               <button className="translate-btn" onClick={runTranslate} disabled={translating || !translateLang.trim()}>
                 {translating ? '...' : '🌐 Translate summary'}
               </button>
