@@ -6,12 +6,15 @@ import { API_URL } from './config.js';
 // format from the backend) into sections for cleaner display.
 function parseStructured(text) {
   if (!text) return null;
-  const sections = { summary: '', keyPoints: [], actionItems: [] };
+  const sections = { title: '', summary: '', keyPoints: [], actionItems: [] };
   const lines = text.split('\n');
   let current = null;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (/^SUMMARY:/i.test(trimmed)) {
+    if (/^TITLE:/i.test(trimmed)) {
+      sections.title = trimmed.replace(/^TITLE:/i, '').trim();
+      current = null;
+    } else if (/^SUMMARY:/i.test(trimmed)) {
       sections.summary = trimmed.replace(/^SUMMARY:/i, '').trim();
       current = null;
     } else if (/^KEY POINTS:/i.test(trimmed)) {
@@ -32,6 +35,11 @@ export default function VoiceNotes() {
   const [seconds, setSeconds] = useState(0);
   const [selectedNote, setSelectedNote] = useState(null);
   const [error, setError] = useState(null);
+  const [translateLang, setTranslateLang] = useState('');
+  const [translated, setTranslated] = useState(null); // { language, text } — summary translation
+  const [translating, setTranslating] = useState(false);
+  const [translatedTranscript, setTranslatedTranscript] = useState(null); // { language, text }
+  const [translatingTranscript, setTranslatingTranscript] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -89,7 +97,7 @@ export default function VoiceNotes() {
     try {
       const res = await axios.post(`${API_URL}/voice-notes`, formData);
       setNotes((prev) => [res.data, ...prev]);
-      setSelectedNote(res.data);
+      selectNote(res.data);
     } catch (e) {
       setError('Could not transcribe that recording. Try again.');
     } finally {
@@ -109,9 +117,42 @@ export default function VoiceNotes() {
       .catch(() => setError('Could not delete that note.'));
   };
 
+  const selectNote = (note) => {
+    setSelectedNote(note);
+    setTranslated(null);
+    setTranslateLang('');
+    setTranslatedTranscript(null);
+  };
+
   const formatTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
-  const sections = selectedNote ? parseStructured(selectedNote.structured) : null;
+  const runTranslate = () => {
+    const language = translateLang.trim();
+    if (!language || !selectedNote) return;
+    setTranslating(true);
+    setError(null);
+    axios
+      .post(`${API_URL}/voice-notes/${selectedNote.id}/translate`, { language, mode: 'structured' })
+      .then((r) => setTranslated({ language: r.data.language, text: r.data.translated }))
+      .catch(() => setError('Translation failed — try again.'))
+      .finally(() => setTranslating(false));
+  };
+
+  const runTranslateTranscript = () => {
+    const language = translateLang.trim();
+    if (!language || !selectedNote) return;
+    setTranslatingTranscript(true);
+    setError(null);
+    axios
+      .post(`${API_URL}/voice-notes/${selectedNote.id}/translate`, { language, mode: 'transcript' })
+      .then((r) => setTranslatedTranscript({ language: r.data.language, text: r.data.translated }))
+      .catch(() => setError('Translation failed — try again.'))
+      .finally(() => setTranslatingTranscript(false));
+  };
+
+  const sections = selectedNote
+    ? parseStructured(translated ? translated.text : selectedNote.structured)
+    : null;
 
   return (
     <div className="voice-notes-view">
@@ -144,7 +185,7 @@ export default function VoiceNotes() {
             <div
               key={n.id}
               className={`conversation-item ${selectedNote?.id === n.id ? 'active' : ''}`}
-              onClick={() => setSelectedNote(n)}
+              onClick={() => selectNote(n)}
             >
               <span className="conversation-title">{n.title || 'Untitled note'}</span>
               <span className="conversation-actions">
@@ -165,7 +206,31 @@ export default function VoiceNotes() {
         )}
         {selectedNote && (
           <div className="voice-note-detail">
-            <h2>{selectedNote.title}</h2>
+            <h2>{translated ? sections?.title || selectedNote.title : selectedNote.title}</h2>
+
+            <div className="translate-row">
+              <input
+                className="translate-input"
+                type="text"
+                value={translateLang}
+                onChange={(e) => setTranslateLang(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && runTranslate()}
+                placeholder="Type a language, then translate summary or transcript below"
+              />
+              <button className="translate-btn" onClick={runTranslate} disabled={translating || !translateLang.trim()}>
+                {translating ? '...' : '🌐 Translate summary'}
+              </button>
+              {translated && (
+                <button className="translate-btn secondary" onClick={() => setTranslated(null)}>
+                  Show original
+                </button>
+              )}
+            </div>
+            {translated && (
+              <p className="translate-label">Showing translation to {translated.language}</p>
+            )}
+            {error && <div className="error-banner">{error}</div>}
+
             {sections?.summary && <p className="voice-summary">{sections.summary}</p>}
 
             {sections?.keyPoints?.length > 0 && (
@@ -192,7 +257,26 @@ export default function VoiceNotes() {
 
             <details className="transcript-details">
               <summary>Full transcript</summary>
-              <p className="voice-transcript">{selectedNote.transcript}</p>
+              <div className="transcript-translate-row">
+                <button
+                  className="translate-btn"
+                  onClick={runTranslateTranscript}
+                  disabled={translatingTranscript || !translateLang.trim()}
+                >
+                  {translatingTranscript ? '...' : `🌐 Translate transcript${translateLang.trim() ? ' to ' + translateLang.trim() : ''}`}
+                </button>
+                {translatedTranscript && (
+                  <button className="translate-btn secondary" onClick={() => setTranslatedTranscript(null)}>
+                    Show original
+                  </button>
+                )}
+              </div>
+              {translatedTranscript && (
+                <p className="translate-label">Showing translation to {translatedTranscript.language}</p>
+              )}
+              <p className="voice-transcript">
+                {translatedTranscript ? translatedTranscript.text : selectedNote.transcript}
+              </p>
             </details>
           </div>
         )}
