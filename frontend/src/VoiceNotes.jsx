@@ -153,8 +153,12 @@ export default function VoiceNotes() {
 
   const startEditing = () => {
     if (!selectedNote) return;
-    setEditStructured(selectedNote.structured || '');
-    setEditTranscript(selectedNote.transcript || '');
+    // If a translation is currently being viewed, edit that instead of the
+    // raw original — this lets you translate an old note to English, then
+    // Edit + Save to permanently convert it, instead of always editing the
+    // original language.
+    setEditStructured(translated ? translated.text : selectedNote.structured || '');
+    setEditTranscript(translatedTranscript ? translatedTranscript.text : selectedNote.transcript || '');
     setEditing(true);
   };
 
@@ -240,7 +244,7 @@ export default function VoiceNotes() {
               Transcribing…
             </div>
           )}
-          <p className="voice-hint">Works in Hindi, English, or a mix of both.</p>
+          <p className="voice-hint">Speak in Hindi, English, or a mix — notes are written in English by default.</p>
           {error && <div className="error-banner">{error}</div>}
         </div>
 
